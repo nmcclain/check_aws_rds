@@ -4,7 +4,7 @@
 #############################
 # YOU MUST SET THESE VARIABLES:
 $EC2_HOME = '/usr/local/ec2-api-tools/';		# http://aws.amazon.com/developertools/351
-$AWS_PHP_SDK_PATH = '/usr/local/ec2-api-tools/';	# http://aws.amazon.com/sdkforphp/
+$AWS_PHP_SDK_PATH = 'awsphpsdk/';	# http://aws.amazon.com/sdkforphp/
 $JAVA_HOME = '/usr/java/latest';			# http://www.java.com/en/download/
 
 #############################
@@ -16,7 +16,7 @@ putenv('TZ=America/Denver');
 error_reporting(-1);
 putenv('EC2_HOME='.$EC2_HOME);
 putenv('JAVA_HOME='.$JAVA_HOME);
-require_once $AWS_PHP_SDK_PATH;
+require_once $AWS_PHP_SDK_PATH.'/sdk.class.php';
 
 $regions = array (
 	'E1' => 'http://monitoring.amazonaws.com/doc/2010-08-01/CloudWatch.wsdl',
@@ -36,47 +36,55 @@ define('AWS_SECRET_KEY', $options["S"]);
 $instance = $options["i"];
 
 $cw = new AmazonCloudWatch();
-# DOES NOT WORK: $response = $cw->list_metrics(array( 'Namespace' => 'AWS/EC2', 'Dimensions' => array( "Dimensions.0.Name" => "InstanceId", "Dimensions.0.Value" => "i-f44f3e99")));
-$response = $cw->list_metrics(array( 'Namespace' => 'AWS/EC2'));
+$response = $cw->list_metrics(array( 'Namespace' => 'AWS/RDS'));
+
 $metrics = array();
 foreach ($response->body->ListMetricsResult->Metrics->member as $v ) {
-	#var_dump( $v);
-	if ( strcmp( (string) $v->Dimensions->member->Name, "InstanceId") ==0) {
-		if (strcmp ($instance, (string) $v->Dimensions->member->Value ) !=0) { continue; }
-	} else { continue; }
-	$metrics[] = (string) $v->MetricName ;
+	if ( isset( $v->Dimensions->member )) {
+		if ( strcmp( (string) $v->Dimensions->member->Name, "DBInstanceIdentifier") ==0) {
+			if ($instance == (string) $v->Dimensions->member->Value ) {
+				$metrics[] = (string) $v->MetricName ;
+			}
+		}
+	}
+
 }
-#echo $instance."\n"; var_dump($metrics);
 
 $now=time();
 $perfdata=array();
 $result=0;
 foreach ($metrics as $m) {
-	if (in_array($m, array("NetworkIn","DiskWriteBytes","NetworkOut","DiskReadBytes"))) {
-		$unit = 'Bytes';
-	} else if (in_array($m, array( "DiskWriteOps","DiskReadOps"))) {
+	if (in_array($m, array( "ReadLatency", "WriteLatency"))) {
+		$unit = 'Seconds';
+	} else if (in_array($m, array( "WriteIOPS", "ReadIOPS"))) {
+		$unit = 'Count/Second';
+	} else if (in_array($m, array( "DatabaseConnections"))) {
 		$unit = 'Count';
+	} else if (in_array($m, array( "FreeableMemory", "FreeStorageSpace", "SwapUsage"))) {
+		$unit = 'Bytes';
 	} else if (in_array($m, array( "CPUUtilization"))) {
 		$unit = 'Percent';
+	} else if (in_array($m, array( "WriteThroughput", "ReadThroughput"))) {
+		$unit = 'Bytes/Second';
 	} else { $unit = 'None'; }
 
-	#`SampleCount`, `Average`, `Sum`, `Minimum`, `Maximum`
-        $r = $cw->get_metric_statistics('AWS/EC2', $m, date( "r", $now- 300), date("r", $now), 300, 'Average', $unit, array("InstanceId" => $instance));
+        $r = $cw->get_metric_statistics('AWS/RDS', $m, date( "r", $now- 300), date("r", $now), 300, 'Average', $unit, array("DBInstanceIdentifier" => $instance));
+
 	if (isset( $r->body->GetMetricStatisticsResult->Datapoints->member[0]->Average)) {
 		array_push($perfdata,$m."=".(string) $r->body->GetMetricStatisticsResult->Datapoints->member[0]->Average);
 		# UNIT: (string) $r->body->GetMetricStatisticsResult->Datapoints->member[0]->Unit
 	} else { $result=2; }
 }
 if ($result==0 ){
-	print "CloudWatch OK for EC2 instance ".$options["i"]." |".join(',', $perfdata)."\n";
+	print "RDS OK for RDS instance ".$instance." |".join(',', $perfdata)."\n";
 	exit(0);
 } else {
-	print "CloudWatch CRITICAL Could not collect AWS CloudWatch data for EC2 instance ".$options["i"]." |\n";
+	print "RDS CRITICAL Could not collect AWS RDS data for RDS instance ".$instance." |\n";
 	exit(2);
 }
 
 function usage($show_regions=0) {
-	echo "usage: check_aws_rds -R [E|W|EU|AP] -K <AWSKeyString> -S <AWSSecretKeyString>\n";
+	echo "usage: check_aws_rds -R [E1|W1|EU|AP] -K <AWSKeyString> -S <AWSSecretKeyString>\n";
 	if ($show_regions==1) {
 		echo " Region codes:\n";
 		echo "	E1: US-East (Northern Virginia) Region\n";
